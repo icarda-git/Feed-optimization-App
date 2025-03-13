@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-android:
-    name: Build Android APK
+    name: Build and Test Android APK
     runs-on: ubuntu-latest
 
     steps:
@@ -25,6 +25,24 @@ jobs:
 
       - name: Restore Dependencies
         run: dotnet restore
+
+      - name: Run Tests with Code Coverage
+        run: dotnet test --collect:"XPlat Code Coverage" --logger trx --results-directory ./TestResults
+
+      - name: Install ReportGenerator
+        run: dotnet tool install --global dotnet-reportgenerator-globaltool
+
+      - name: Generate Code Coverage Report
+        run: |
+          reportgenerator -reports:./TestResults/*/coverage.cobertura.xml \
+            -targetdir:./TestResults/CoverageReport \
+            -reporttypes:Html
+
+      - name: Upload Test and Coverage Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: Code-Coverage-Report
+          path: ./TestResults/CoverageReport
 
       - name: Build Android App
         run: dotnet build -f net8.0-android -c Release
@@ -32,52 +50,21 @@ jobs:
       - name: Create Android APK
         run: |
           dotnet publish -f net8.0-android -c Release -o ./publish
-          mv ./publish/*.apk ./publish/App.apk  # Rename output file
+          mv ./publish/*.apk ./publish/App.apk 
 
       - name: Upload Android Build Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: Android-APK
           path: ./publish/App.apk
-
-  build-ios:
-    name: Build iOS IPA
-    runs-on: macos-latest
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
-
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v3
-        with:
-          dotnet-version: '8.0.x'
-
-      - name: Install MAUI Workload
-        run: dotnet workload install maui
-
-      - name: Restore Dependencies
-        run: dotnet restore
-
-      - name: Build iOS App
-        run: dotnet build -f net8.0-ios -c Release
-
-      - name: Create iOS IPA
-        run: |
-          mkdir -p ./publish
-          dotnet publish -f net8.0-ios -c Release -o ./publish
-          mv ./publish/*.ipa ./publish/App.ipa  # Rename output file
-
-      - name: Upload iOS Build Artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: iOS-IPA
-          path: ./publish/App.ipa
 
   deploy-android:
     name: Deploy to Google Play
     runs-on: ubuntu-latest
     needs: build-android
+    permissions:
+      contents: 'read'
+      id-token: 'write'
 
     steps:
       - name: Download Android APK
@@ -86,47 +73,40 @@ jobs:
           name: Android-APK
           path: ./publish
 
+      - name: Authenticate with Google Cloud using Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/${{ secrets.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/${{ secrets.WORKLOAD_IDENTITY_POOL }}/providers/${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Debug - Verify Authentication
+        run: |
+          echo "🔍 Listing Google Cloud authenticated identities..."
+          gcloud auth list
+          echo "🔍 Checking available projects..."
+          gcloud projects list
+
       - name: Deploy to Google Play Store (Beta)
         uses: r0adkll/upload-google-play@v1
         with:
-          serviceAccountJson: ${{ secrets.GOOGLE_PLAY_API_KEY }}
           packageName: "com.icarda.feedapp"
           releaseFiles: "./publish/App.apk"
           track: beta
           status: completed
 
-  deploy-ios:
-    name: Deploy to App Store Connect (TestFlight)
-    runs-on: macos-latest
-    needs: build-ios
-
-    steps:
-      - name: Download iOS IPA
-        uses: actions/download-artifact@v3
-        with:
-          name: iOS-IPA
-          path: ./publish
-
-      - name: Setup Fastlane
+      - name: Debug - Check Google Cloud Logs
         run: |
-          gem install fastlane
-
-      - name: Deploy to TestFlight
-        run: |
-          fastlane deliver --ipa "./publish/App.ipa" \
-            --username "${{ secrets.APPLE_ID }}" \
-            --app_identifier "com.icarda.feedapp" \
-            --skip_screenshots \
-            --force
+          echo "🔍 Fetching Workload Identity Pool logs..."
+          gcloud logging read "resource.type=identity_pool"
 
   notify-team:
     name: Notify Team
     runs-on: ubuntu-latest
-    needs: [deploy-android, deploy-ios]
+    needs: deploy-android
 
     steps:
       - name: Send Teams Notification
         run: |
           curl -H "Content-Type: application/json" \
-               -d '{"text": "🚀 New MAUI App build deployed to Google Play & TestFlight! 🎉"}' \
-               -X POST "https://outlook.office.com/webhook/YOUR_WEBHOOK_URL"
+            -d '{"text": "🚀 New MAUI App build deployed to Google Play! 🎉"}' \
+            -X POST "https://outlook.office.com/webhook/YOUR_WEBHOOK_URL"
