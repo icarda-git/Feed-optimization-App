@@ -20,18 +20,19 @@ jobs:
         with:
           dotnet-version: '9.0.x'
 
-      - name: List Project Structure
-        run: Get-ChildItem -Path . -Recurse -Depth 2
+      - name: List Installed .NET SDKs
+        run: dotnet --list-sdks
 
-      # Install workloads with --skip-manifest-update to prevent issues
+      - name: List Project Structure
+        run: Get-ChildItem -Path . -Recurse -Depth 3
+
       - name: Install MAUI Workload
         run: dotnet workload install android ios maccatalyst wasm-tools maui --skip-manifest-update
 
-      # Change to the correct directory before subsequent operations
-      - name: Restore Dependencies
+      - name: Restore Dependencies (with detailed logging)
         run: |
           cd ./FeedOptimizationApp
-          dotnet restore FeedOptimizationApp.sln
+          dotnet restore FeedOptimizationApp.sln --verbosity detailed
 
       - name: Build Android App
         run: |
@@ -93,4 +94,4 @@ jobs:
           curl -H "Content-Type: application/json" \
                -d '{"text": "🚀 New MAUI App build deployed to Google Play! 🎉"}' \
                -X POST "${{ secrets.TEAMS_WEBHOOK_URL }}"
-               -X POST "${{ secrets.TEAMS_WEBHOOK_URL }}"
+
