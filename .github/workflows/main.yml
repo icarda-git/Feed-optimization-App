@@ -1,0 +1,95 @@
+name: .NET MAUI CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build-android:
+    name: Build Android APK
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: List Project Structure
+        run: Get-ChildItem -Path . -Recurse -Depth 3  # List all files to verify path
+
+      - name: Install MAUI Workload
+        run: dotnet workload install android ios maccatalyst wasm-tools maui --skip-manifest-update
+
+      - name: Restore Dependencies (with detailed logging)
+        run: |
+          cd /workspaces/Feed-optimization-App  # Change to the root directory of the repository
+          dotnet restore FeedOptimizationApp.sln --verbosity detailed  # Restore dependencies
+
+      - name: Build Android App
+        run: |
+          cd /workspaces/Feed-optimization-App  # Ensure we're in the correct directory
+          dotnet build FeedOptimizationApp.sln -f net9.0-android -c Release  # Build the solution
+
+      - name: Create Android APK
+        run: |
+          cd /workspaces/Feed-optimization-App  # Ensure we're in the correct directory
+          dotnet publish FeedOptimizationApp.sln -f net9.0-android -c Release -o ./publish
+          if (Test-Path ./publish/*.apk) { 
+            Get-ChildItem ./publish/*.apk | Select-Object -First 1 | Move-Item -Destination ./publish/App.apk
+          } else {
+            Write-Error "No APK files found in publish directory"
+            exit 1
+          }
+
+      - name: Upload Android Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-APK
+          path: /workspaces/Feed-optimization-App/publish/App.apk
+
+  deploy-android:
+    name: Deploy to Google Play
+    runs-on: windows-latest
+    needs: build-android
+
+    steps:
+      - name: Download Android APK
+        uses: actions/download-artifact@v3
+        with:
+          name: Android-APK
+          path: ./publish
+
+      - name: Authenticate with Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          workload_identity_provider: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+
+      - name: Deploy to Google Play Store (Beta)
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJson: ""  # Removed secrets for federated identity
+          packageName: "com.icarda.feedapp"
+          releaseFiles: "./publish/App.apk"
+          track: beta
+          status: completed
+
+  notify-team:
+    name: Notify Team
+    runs-on: windows-latest
+    needs: [deploy-android]
+
+    steps:
+      - name: Send Teams Notification
+        run: |
+          curl -H "Content-Type: application/json" \
+               -d '{"text": "🚀 New MAUI App build deployed to Google Play! 🎉"}' \
+               -X POST "${{ secrets.TEAMS_WEBHOOK_URL }}"
+
+
